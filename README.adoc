@@ -1,0 +1,678 @@
+= lra-getting-started
+
+:imagesdir: images
+
+Sample demo application with setup steps to get started with MicroProfile LRA specification
+
+You can choose to follow the steps described in this document or you can directly move the
+final solution in the link:end-solution[End solution directory] and follow the startup steps
+there.
+
+== LRA getting started guide
+
+=== Prerequisities
+
+For our examples we will use Throntail as the runtime. Go to https://thorntail.io/generator/
+and create an applications called lra-service with JAX-RS and CDI fractions:
+
+image::thorntail-generator.png[Thorntail project generator example]
+
+Extract your downloaded ZIP into a work directory (let's call it WORK_DIR):
+
+`unzip /path/to/lra-service.zip -d $WORK_DIR`
+
+`cd $WORK_DIR`
+
+and open the project in your favourite IDE. Also please change the
+`<build><finalName>` in your generated `pom.xml` from `demo` to
+`${project.artifactId}` which allows us to differenciate our services.
+
+=== Part 1 - starting first LRA
+
+To start with LRA we need to include two maven dependencies:
+
+[source,xml]
+----
+<dependency>
+  <groupId>org.eclipse.microprofile.lra</groupId>
+  <artifactId>microprofile-lra-api</artifactId>
+  <version>1.0-RC1</version>
+</dependency>
+<dependency>
+  <groupId>org.jboss.narayana.rts</groupId>
+  <artifactId>narayana-lra</artifactId>
+  <version>5.9.8.Final</version>
+</dependency>
+----
+
+The first dependency is a MicroProfile LRA API binary containing all of the
+required classes that users interact with. The second one is the dependency
+on the https://narayana.io[Narayana] implementation of the MP LRA specification.
+
+NOTE: In fact, only the narayana-lra dependency is required as it also
+transitively pulls MP LRA dependency. But in the environments where the
+implementation of the specification can be provided by the container, only
+the MP LRA dependency can be used as users interact only with the LRA
+specification API.
+
+Add these two dependencies to the LRA service `pom.xml`.
+
+LRA specification is based on the JAX-RS. For a start, let's create a new
+JAX-RS resource called LraResource:
+
+[source,java]
+----
+package io.xstefank.example.lra.lraservice.rest;
+
+import org.eclipse.microprofile.lra.annotation.ws.rs.LRA;
+
+import javax.enterprise.context.ApplicationScoped;
+import javax.ws.rs.GET;
+import javax.ws.rs.HeaderParam;
+import javax.ws.rs.Path;
+import javax.ws.rs.core.Response;
+import java.net.URI;
+
+@Path("/lra")
+@ApplicationScoped
+public class LraResource {
+
+    @GET
+    @Path("/perform")
+    @LRA
+    public Response performLRA(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId) {
+        System.out.println("PERFORMING LRA work " + lraId);
+
+        return Response.ok(lraId.toString()).build();
+    }
+}
+----
+
+As you can see, this is a normal JAX-RS resource enhanced with `@LRA` annotation.
+The `@LRA` annotation is the main entry point for the LRA specification. The
+default behavior starts a new LRA when this method is invoked and finishes it
+when the methods end.
+
+The Narayana implementation is based on the orchestration approach which means
+that Narayana provides an LRA coordinator microservice that is responsible for
+the LRA processing and execution. The LRA coorodinator is a required service
+for the LRA to funtion properly. It is provided as a Docker image so to
+start the LRA coordinator you can run:
+
+`docker run --rm --name lra-coordinator --network host jbosstm/lra-coordinator`
+
+or alternatively you can download the Narayana LRA source code from
+https://github.com/jbosstm/narayana/tree/master/rts/lra[GitHub] and build
+and run it locally. The coordinator jar is localted in the lra-coordinator
+directory.
+
+Now that the LRA coordinator is running we can start our LRA service:
+
+build the service with: `mvn clean package`
+
+and run it with: `java -jar -Dthorntail.http.port=8081 -Dlra.http.port=8080 -jar target/lra-service-thorntail.jar`
+
+NOTE: We need to start the LRA service on the port 8081 as the LRA coordinator
+already occupies the port 8080. We also have to specify where the coordinator
+runs by `lra.http.port` property (the default host value is localhost).
+
+Now we can start our first LRA by invoking this endpoint:
+
+`http :8081/lra/perform`
+
+NOTE: I am using HTTPie but if you are more used to curl, perform a GET call
+like this `curl -X GET http://localhost:8081/lra/perform`.
+
+Congratulations, we have started and finished our first LRA. For now, it's
+not doing anything else so let's enlist our `LraResource` as a participant
+in the newly started LRA.
+
+=== Part 2 - Enlisting an LRA participant
+
+To enlist resource as an LRA participant we need to include a PUT JAX-RS
+method annotated by the `@Compensate` annotation:
+
+[source,java]
+----
+@PUT
+@Path("/compensate")
+@Compensate
+public Response compensate(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId) {
+    System.out.println("COMPENSATING LRA " + lraId);
+
+    return Response.ok().build();
+}
+----
+
+This method represents the compesnation action that is going to be invoked
+when the LRA (which the resource joined and also started in our case) is
+cancelled. This happens when the `@LRA` method execution fails with a
+specific JAX-RS response code which by defult is in the families of 4xx and
+5xx codes. Let's change our `@LRA` method to return 412 PRECONDITION FAILED
+status code to cancel the LRA rather than close it:
+
+[source,java]
+----
+@GET
+@Path("/perform")
+@LRA
+public Response performLRA(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                           @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+    System.out.println("PERFORMING LRA work " + lraId);
+    System.out.println("PERFORM recovery id: " + recoveryId);
+
+    return Response.status(Response.Status.PRECONDITION_FAILED).build();
+}
+----
+
+Notice that we also added a new header paramater called
+`LRA.LRA_HTTP_RECOVERY_HEADER`. This header represents an unique URI that
+is received as the idendification of this participants inclusion in the
+particular LRA. You can look at it as a subscription id. Performing operations
+with this recoveryId can help resource identify which particular LRA is being
+compensated/closed when it is joining several LRAs in parallel but also helps,
+as name suggests, with the recovery if the service needs to be restarted. The
+recoveryId can also be retrieved in the `@Compensate` method:
+
+[source,java]
+----
+@PUT
+@Path("/compensate")
+@Compensate
+public Response compensate(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                           @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+    System.out.println("COMPENSATING LRA " + lraId);
+    System.out.println("COMPENSATE recovery id: " + recoveryId);
+
+    return Response.ok().build();
+}
+----
+
+Now we are ready to enlist our `LraResource` in the LRA. Restart the LRA service:
+
+kill the previous process: `Ctrl+C`
+
+build it again: `mvn clean package`
+
+and run it: `java -jar -Dthorntail.http.port=8081 -Dlra.http.port=8080 -jar target/lra-service-thorntail.jar`
+
+Execute the LRA again with: `http :8081/lra/perform`. You will see that the
+LRA was now cancelled because of the returned JAX-RS return code and the
+`@Compensate` method was called.
+
+Congratulations, you've successfully started a new LRA, elisted a resource
+with it, and then cancelled it which triggered the compensating action of
+the enlisted resource.
+
+=== Part 3 - Closing the LRA successfully
+
+In some cases, you might need to perform some form of clean up actions even
+in the case the LRA is successfully finished (for instance, you must
+remember the Order ID for the possible compensation). For this reason, the LRA
+specification also provides a callback for successfull completition called
+`@Complete`:
+
+[source,java]
+----
+@PUT
+@Path("/complete")
+@Complete
+public Response complete(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                           @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+    System.out.println("COMPLETING LRA " + lraId);
+    System.out.println("COMPLETE recovery id: " + recoveryId);
+
+    return Response.ok().build();
+}
+----
+
+As you can see, the signature is almost identical to the Compensate callback.
+
+Let's now change the LRA operation to close the LRA successfully again:
+
+[source,java]
+----
+@GET
+@Path("/perform")
+@LRA
+public Response performLRA(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                           @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+    System.out.println("PERFORMING LRA work " + lraId);
+    System.out.println("PERFORM recovery id: " + recoveryId);
+
+    return Response.ok(lraId.toString()).build();
+}
+----
+
+Now you can again repeat reloading steps but when you execute the LRA you
+will see that `@Complete` method is called instead of `@Compensate`.
+
+=== Part 4 - Propagating LRA to a different microservice
+
+So now we are in a system with a single microservice (LRA service) which
+is starting LRA, elisting with it, and then closing it. Since the MicroProfile
+is directed to be used in the microservices architecture, how can we
+propagate LRA to a different microservice?
+
+Let's create a new microservice by copying the one that we already have:
+
+`cp -r lra-service lra-service-2`
+
+Open a new terminal window and cd into the lra-service-2 directory. Open it
+in your favourite IDE. First rename the `artifactId` of the service in the
+`pom.xml` to `lra-service-2` to differenciate this service.
+Let's now rename our `LraResource` to `ParticipantResource`
+to avoid confusion in naming moving on.
+
+Now we are all set to propagate the LRA to the `lra-service-2`. We just
+need to call it from `lra-service`.
+
+Let's move back to the `lra-service` and `LraResource`. Modify the method:
+
+[source,java]
+----
+@GET
+@Path("/perform")
+@LRA
+public Response performLRA(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                           @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+    System.out.println("PERFORMING LRA work " + lraId);
+    System.out.println("PERFORM recovery id: " + recoveryId);
+    
+    // call lra-service-2
+    ClientBuilder.newClient().target("http://localhost:8082/lra/perform")
+        .request().get();
+
+    return Response.ok(lraId.toString()).build();
+}
+----
+
+And that is all that's need to be done. Now we can start our services:
+
+In the first terminal run: `mvn clean package && java -jar -Dthorntail.http.port=8081 -Dlra.http.port=8080 -jar target/lra-service-thorntail.jar`
+
+And in the second one run: `mvn clean package && java -jar -Dthorntail.http.port=8082 -Dlra.http.port=8080 -jar target/lra-service-2-thorntail.jar`
+
+Now we have three services running:
+
+* LRA coordinator on port 8080
+* LRA service on port 8081
+* LRA service 2 on port 8082
+
+So let's excerise our microservices system by invoking the LRA service which
+start the new LRA and propagates it to the LRA service 2:
+
+`http :8081/lra/perform`
+
+Now you will see that the `lra-service-2` also enlisted `ParticipantResource`
+in the received LRA and Complete methods have been called on both services as
+the LRA outcome closed successfully.
+
+Let's modify for completness the `lra-service-2` to fail with 412 to
+cancel instead of close:
+
+[source,java]
+----
+@Path("/lra")
+public class ParticipantResource {
+
+    @GET
+    @Path("/perform")
+    @LRA
+    public Response performLRA(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                               @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+        System.out.println("PERFORMING LRA work " + lraId);
+        System.out.println("PERFORM recovery id: " + recoveryId);
+
+        return Response.status(lraId.toString()).build();
+    }
+----
+
+NOTE: now we are closing the LRA started in `lra-service` in the
+`lra-service-2`.
+
+And recompile and restart it again:
+
+`mvn clean package && java -jar -Dthorntail.http.port=8082 -Dlra.http.port=8080 -jar target/lra-service-2-thorntail.jar`
+
+And now when you execute the scenario again (`http :8081/lra/perform`) you
+will see that Complete methods have been called on both services.
+
+Congratulations! We have covered all of the basic usage of the LRA and now
+you are ready to start using it in your services. Next sections will dive
+a little more into the detailed usage and tuning of the LRA.
+
+=== [Advanced] Part 5 - Eventual compensation/completitions
+
+So far we've covered three LRA states:
+
+* `LRAStatus.Active` - an active LRA
+* `LRAStatus.Closed` - successfully closed LRA
+* `LRAStatus.Cancelled` - a successfully compensated LRA
+
+However, there are also a few more:
+
+* `LRAStatus.FailedToClose` - LRA couldn't be fully closed
+* `LRAStatus.FailedToCancel` - LRA couldn't be fully compensated
+
+These two states represent exceptional conditions in which one or more of
+the participants cannot perform their ending operations (Complete or
+Compensate). This state must be logged by the implementation and probably
+a manual interaction is required to resolve potentional conflicts. Also
+an implementor may choose to utilize some form of heuristics in these cases.
+
+The last two LRA statuses are:
+
+* `LRAStatus.Closing` - LRA is currently closing (calling Complete callbacks)
+* `LRAStatus.Cancelling` - LRA is currently cancelling (calling Compensate
+callbacks)
+
+These two states represent intermidiate states between LRA being asked to end
+and its actual end.
+
+For long running Completitions or Compensations that would require a long
+periods of time to finish, the specification allows to return these
+progressive states from Complete or Compensate callbacks. This can be done
+by several ways but for our use-case it's enought to return just 202 Accepted
+status code from Complete or Compensate method. This will allow the
+implementation to know that it needs to replay ending phase for this particular
+participant again after some predefined timeout.
+
+Let's modify `lra-service`:
+
+[source,java]
+----
+private boolean accepted = true;
+
+@PUT
+@Path("/complete")
+@Complete
+public Response complete(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                           @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+    System.out.println("COMPLETING LRA " + lraId);
+    System.out.println("COMPLETE recovery id: " + recoveryId);
+
+    return accepted ? Response.accepted().build() : Response.ok().build();
+}
+
+@GET
+@Path("clearAccepted")
+public void clearAccepted() {
+    accepted = false;
+}
+----
+
+As you can see, if the end phase method return Closing or Cancelling (202)
+response this end phase method will be eventually called again so it must be
+idempotent.
+
+Now you can replay the scenario again:
+
+`http :8081/lra/perform`
+
+but notice that if you wait for some time (by default it's 2 minutes) the
+Complete call at `lra-service` will be called again. If you don't want to
+wait, you can trigger the recovery on LRA coordinator by a call:
+
+`http :8080/lra-recovery-coordinator/recovery`
+
+Now we need to actually finish our Complete operation (so it returns 200
+instead). To do that invoke clearAccepted endpoint:
+
+`http :8081/lra/clearAccepted`
+
+and wair or replay recovery again:
+
+`http :8080/lra-recovery-coordinator/recovery`
+
+The call will now return an empty JSON array which means that the LRA finished.
+You can also verify that the LRA is ended by a call to `http :8080/lra-coordinator`.
+
+==== Status method
+
+As we saw previously, when the end phase call cannot be completed immediately
+the Complete or Compensate method will be called repeatedly so it must be
+idempotent. If you can't make it idempotent, the specification allows you
+to specify a new method annotated with the `@Status` annotation that will be
+called when the implementation processes recovery instead.
+
+Let's add a `@Status` method to `lra-service`:
+
+[source,java]
+----
+@GET
+@Path("/status")
+@Status
+public Response status(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                       @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+    System.out.println("STATUS FOR LRA " + lraId);
+    System.out.println("STATUS recovery id: " + recoveryId);
+
+    return accepted ? Response.accepted().build() : Response.ok(ParticipantStatus.Completed.name()).build();
+}
+----
+
+NOTE: `@Status` method must be in JAX-RS case a GET JAX-RS endpoint.
+
+And recompile and restart the scenario again.
+
+Now you notice that first time when the LRA is asked to complete, the Complete
+method is called at `lra-service`. However, on the recovery (triggered by
+timeout or manually) you can notice that Status method is called instead.
+
+NOTE: Notice that we need to return `ParticipantStatus` from the Status method.
+
+==== Forget method
+
+Since the participant may need to remember some information in case the
+potential compensation is needed (e.g. the order id to know which order
+needs to be cancelled) the MP LRA specification provides an annotation
+called `@Forget` that the participant may use to denote a method that
+will be called when the LRA cannot be finished successfully (
+`FailedToClose` or `FailedToCancel` states)
+
+Let's add the Forget method to `lra-service`:
+
+[source,java]
+----
+@DELETE
+@Path("/forget")
+@Forget
+public Response forget(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                       @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+    System.out.println("FORGET FOR LRA " + lraId);
+    System.out.println("FORGET recovery id: " + recoveryId);
+
+    return Response.ok().build();
+}
+----
+
+NOTE: `@Forget` method must be in JAX-RS case a DELETE JAX-RS endpoint.
+
+And change the Status method to actually fail the close of the LRA by returning
+`ParticipantStatus.FailedToComplete`:
+
+[source,java]
+----
+@GET
+@Path("/status")
+@Status
+public Response status(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                       @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+    System.out.println("STATUS FOR LRA " + lraId);
+    System.out.println("STATUS recovery id: " + recoveryId);
+
+    return accepted ? Response.accepted().build() : Response.ok(ParticipantStatus.FailedToComplete.name()).build();
+}
+----
+
+You can notice now that when the LRA is finished (after accepted status
+is cleared) the Forget method is also called.
+
+=== [Advanced] Part 6 - Inspecting LRA annotation in detail
+
+Now is the right time to investigate the `@LRA` annotation in more detail. The
+most important attribute of this annotation is `value` parameter which is
+setting the transactional type of the LRA executed in the annotatated method.
+The possible values are:
+
+* `REQUIRED` - default (and what we used up to this point). Starts a new LRA
+only if there is no LRA context (represented by `LRA.LRA_HTTP_CONTEXT_HEADER`
+header) received in the invoking call.
+
+* `REQUIRES_NEW` - always starts a new LRA even if there is one received.
+
+* `MANDATORY` - must be called with LRA context otherwise it returns 412
+Precondition Failed status code.
+
+* `SUPPORTS` - may be called with LRA context but doesn't have to.
+
+* `NOT_SUPPORTED` - method will be executed without LRA context (LRA will
+be resumed after the method ends).
+
+* `NEVER` - if executed with the LRA context it returns 412 Precondition
+Failed.
+
+* `NESTED` - starts a new LRA which will be nested under the received
+context or a new LRA if no context is received.
+
+For the example purposes we don't need to invastigate individual LRA types
+in more detail but feel free to consult the specification text and JavaDoc
+for more details.
+
+Another important attribute is called `end` which is a boolean value
+indicating whether the LRA should be ended (closed/cancelled) when the method
+is finished. The default value is `true`. Let's experiment a little with
+this attribute. 
+
+Update the `lra-service` `@LRA` method to this:
+
+[source,java]
+----
+@GET
+@Path("/perform")
+@LRA(end = false)
+public Response performLRA(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                           @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+    System.out.println("PERFORMING LRA work " + lraId);
+    System.out.println("PERFORM recovery id: " + recoveryId);
+    
+    // call lra-service-2
+    ClientBuilder.newClient().target("http://localhost:8082/lra/perform")
+        .request().get();
+
+    return Response.ok(lraId.toString()).build();
+}
+----
+
+WARNING: Also remove Status and Forget methods and accepted responses
+if you followed the previous part.
+
+And `lra-service-2` `@LRA` method like this:
+
+[source,java]
+----
+@GET
+@Path("/perform")
+@LRA(end = false)
+public Response performLRA(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                           @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+    System.out.println("PERFORMING LRA work " + lraId);
+    System.out.println("PERFORM recovery id: " + recoveryId);
+
+    return Response.ok(lraId.toString()).build();
+}
+----
+
+NOTE: Note, that we are now returning status 200 OK because cancellation has a 
+priority over `end = false`.
+
+And add another method to the `lra-service` that will close the LRA:
+
+[source,java]
+----
+@GET
+@Path("/end")
+@LRA(value = LRA.Type.MANDATORY)
+public Response endLRA(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId) {
+    System.out.println("ENDING LRA " + lraId);
+
+    return Response.ok().build();
+}
+----
+
+Now you can restart the `lra-service` and replay the example scenario:
+
+`mvn clean package && java -jar -Dthorntail.http.port=8081 -Dlra.http.port=8080 -jar target/lra-service-thorntail.jar`
+
+`mvn clean package && java -jar -Dthorntail.http.port=8082 -Dlra.http.port=8080 -jar target/lra-service-2-thorntail.jar`
+
+And call the `lra-service` to start a new LRA but do not close it:
+
+`http :8081/lra/perform`
+
+You may notice that PERFORM calls have been executed but the Complete calls
+have not yet been delivered. You can also query the LRA coordinator directly
+to request all active LRAs that it knows of:
+
+`http :8080/lra-coordinator`
+
+This will return a JSON object with only one LRA which is still active. To close
+the LRA we've started we need to call a method which has a value of `end = true`
+(remember that it is a MANDATORY endpoint so we must pass the LRA we want
+to close in LRA.LRA_HTTP_CONTEXT_HEADER header):
+
+`http :8081/lra/end Long-Running-Action:http://localhost:8080/lra-coordinator/0_ffffc0a80066_3cb52bba_5da089cb_45`
+
+NOTE: Copy the LRA Id URI from the log of any of the services or from the
+first call to the `lra-service`.
+
+Now the LRA is closed and the Complete calls are received at both services.
+
+The next attributes to mention deal with the conditions on which the LRA
+should be cancelled:
+
+* `cancelOn` - HTTP response codes on which to cancel
+* `cancelOnFamily` -  families of response code on which to cancel (default 
+is 4xx and 5xx)
+
+These attributes, as the name says, specify the cancellation conditions. We
+already used them for our compensation examples so we don't need to excercise
+them again.
+
+The last attributes of `@LRA` annoatations are `timeLimit` and `timeUnit`
+which allows you to specify the timeout of the LRA after which it will
+became eligible for cancellation. Again, example would be pretty
+straitforward so we will not include it here.
+
+=== [Advanced] Part 7 - AfterLRA notifications
+
+Any LRA microservice (not necessarily a participant) can optionally enlist
+for a notification which is received when the LRA is finished. This can be done
+by annotating any method of the class that contains a different `@LRA`
+annotated method with the `@AfterLRA` annotation.
+
+Let's add an `@AfterLRA` method to `lra-service`:
+
+[source,java]
+----
+@PUT
+@Path("/after")
+@AfterLRA
+public Response after(@HeaderParam(LRA.LRA_HTTP_ENDED_CONTEXT_HEADER) URI endedLRA) {
+    System.out.println("AFTER_LRA ended LRA: " + endedLRA);
+
+    return Response.ok().build();
+}
+----
+
+And replay any of the previous scenarios which finishes the started LRA. You
+will see that this method is invoked. This functionality may be used to, for
+instance, start a new LRA once another one ended.
+
+=== The End
+
+This would be all for this tutorial the finished solution which followed these
+steps can be found in the ink:end-solution[End solution directory]. Hopefully,
+you learned how to use MicroProfile LRA specification and you can start now
+using it in your microservices applications.
