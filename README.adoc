@@ -339,7 +339,7 @@ public class ParticipantResource {
         System.out.println("PERFORMING LRA work " + lraId);
         System.out.println("PERFORM recovery id: " + recoveryId);
 
-        return Response.status(Response.Status.PRECONDITION_FAILED).build();
+        return Response.ok(lraId.toString()).build();
     }
 ----
 
@@ -349,6 +349,26 @@ And recompile and restart `lra-service-2` again (in the second terminal):
 
 And now when you execute the scenario again (`http :8081/lra/perform`) you
 will see that Compensate methods have been called on both services.
+
+If you plan to continue with the advanced part of this tutorial please return
+`lra-service-2` back to returning 200:
+
+[source,java]
+----
+@Path("/lra")
+public class ParticipantResource {
+
+    @GET
+    @Path("/perform")
+    @LRA
+    public Response performLRA(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
+                               @HeaderParam(LRA.LRA_HTTP_RECOVERY_HEADER) URI recoveryId) {
+        System.out.println("PERFORMING LRA work " + lraId);
+        System.out.println("PERFORM recovery id: " + recoveryId);
+
+        return Response.status(Response.Status.PRECONDITION_FAILED).build();
+    }
+----
 
 Congratulations! We have covered all of the basic usage of the LRA and now
 you are ready to start using it in your services. Next sections will dive
@@ -417,10 +437,6 @@ public void clearAccepted() {
 As you can see, if the end phase method return Closing or Cancelling (202)
 response this end phase method will be eventually called again so it must be
 idempotent.
-
-WARNING: If you followed the tutorial to this point don't forget to fix
-the `lra-service-2` `performLRA` method to return 200
-(`Response.ok(lraId.toString).build()`);
 
 Now you can recompile and restart services and replay the scenario again:
 
@@ -585,7 +601,7 @@ public Response performLRA(@HeaderParam(LRA.LRA_HTTP_CONTEXT_HEADER) URI lraId,
 WARNING: Also remove Status and Forget methods and accepted responses
 if you followed the previous part.
 
-And `lra-service-2` `@LRA` method like this:
+And `lra-service-2` `@LRA` method like this if needed:
 
 [source,java]
 ----
@@ -694,3 +710,13 @@ This would be all for this tutorial the finished solution which followed these
 steps can be found in the link:end-solution[End solution directory]. Hopefully,
 you learned how to use MicroProfile LRA specification and you can start now
 using it in your microservices applications.
+
+=== Troubleshooting
+
+You can always query the all LRAs that the LRA coordinator knows of by a call:
+
+`http :8080/lra-coordinator`
+
+which return JSON array of LRAs. If you get stuck just try to restart the 
+individual services and LRA coordinator. Otherwise, please raise
+https://github.com/xstefank/lra-tutorial/issues[an issue].
