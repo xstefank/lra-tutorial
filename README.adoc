@@ -1,4 +1,4 @@
-= lra-getting-started
+= LRA tutorial
 
 :imagesdir: images
 
