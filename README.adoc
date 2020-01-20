@@ -339,7 +339,7 @@ public class ParticipantResource {
         System.out.println("PERFORMING LRA work " + lraId);
         System.out.println("PERFORM recovery id: " + recoveryId);
 
-        return Response.ok(lraId.toString()).build();
+        return Response.status(Response.Status.PRECONDITION_FAILED).build();
     }
 ----
 
@@ -366,7 +366,7 @@ public class ParticipantResource {
         System.out.println("PERFORMING LRA work " + lraId);
         System.out.println("PERFORM recovery id: " + recoveryId);
 
-        return Response.status(Response.Status.PRECONDITION_FAILED).build();
+        return Response.ok(lraId.toString()).build();
     }
 ----
 
